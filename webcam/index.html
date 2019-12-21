@@ -266,6 +266,8 @@
 				//uniforms.duplication.value = document.getElementById("duplication").value;
 				//uniforms.hue.value = document.getElementById("hue").value;
 				
+				uniforms.inTexture.value = new THREE.VideoTexture(video);
+				
 				renderer.render(scene, camera);
 			}			
 			
