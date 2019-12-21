@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>WEBCAM</title>
+		<style>
+			body { margin: 0; }
+			canvas { width: 100%; height: 100% }
+			
+			#renderContainer {
+				position: fixed;
+				left: 0;
+				top: 0;
+			}
+			
+			#gui {
+				z-index: 10;
+				position: fixed;
+				background: rgba(0, 0, 0, 0.5);
+				color: white;
+			}
+			
+			.invisible {
+				display: none;
+			}
+			
+		</style>
+	</head>
+	<body>
+		<script id="vertexShader" type="x-shader/x-vertex">
+			varying vec2 vUv;
+			void main()
+			{
+				vUv = uv;
+				vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+				gl_Position = projectionMatrix * mvPosition;
+			}
+		</script>
+		
+		<script id="fragmentShader" type="x-shader/x-fragment">
+			
+			uniform sampler2D inTexture;
+			
+			uniform float swirl;
+			uniform float dilationX;
+			uniform float offsetX;
+			uniform float offsetY;
+			uniform float duplication;
+			
+			uniform float hue;
+			
+			varying vec2 vUv;
+			void main( void ) {
+				
+				vec2 uv = vUv.xy;
+				
+				vec2 position = - 1.0 + 2.0 * uv;				
+				
+				float dilationY = -dilationX;
+				position.x = dilationX * (position.x * position.x * position.x) + (1.0 - dilationX) * position.x;
+				position.y = dilationY * (position.y * position.y * position.y) + (1.0 - dilationY) * position.y;
+				
+				float a = atan( position.y, position.x );
+				float r = sqrt( dot( position, position ) );
+
+				a += swirl * r;				
+			
+				uv.x = cos( a ) * r;
+				uv.y = sin( a ) * r;
+				
+				uv = (uv + 1.0) / 2.0;
+				
+				uv *= duplication;
+				uv.x += offsetX;
+				uv.y += offsetY;
+				uv = mod(uv, 1.0);
+
+				vec4 rawColor = texture2D(inTexture, uv.xy);
+				
+				float PI = 3.1415926535;
+				float h = mod(hue, 1.0);
+				
+				//rawColor.r = 0.5 * cos(2.0*PI*(rawColor.r + hue)) + 0.5;
+				//rawColor.g = 0.5 * cos(2.0*PI*(rawColor.r + hue + 0.333333)) + 0.5;
+				//rawColor.b = 0.5 * cos(2.0*PI*(rawColor.r + hue - 0.333333)) + 0.5;
+
+				rawColor.r *= 0.5 * cos(2.0*PI*(h)) + 0.5;
+				rawColor.g *= 0.5 * cos(2.0*PI*(h + 0.333333)) + 0.5;
+				rawColor.b *= 0.5 * cos(2.0*PI*(h - 0.333333)) + 0.5;
+
+				gl_FragColor = rawColor;
+			}
+		</script>
+	
+		<script src="js/three.js"></script>
+		<script>
+		
+			var DEBUGMODE = false;
+			//DEBUGMODE = true;
+		
+			var MINLAT = 33.765117;
+			var MINLONG = -118.351453;
+			var MAXLAT = 33.765398;
+			var MAXLONG = -118.350809;
+			
+			//var MINLAT = 33.759072;
+			//var MAXLAT = 33.759318;
+			//var MINLONG = -118.387479;
+			//var MAXLONG = -118.387173;
+			
+			
+			var HOUSELATLENGTH  = MAXLAT - MINLAT;
+			var HOUSELONGLENGTH = MAXLONG - MINLONG;
+			
+			var width, height;
+			var camera, scene, renderer, video;
+			
+			var texture, uniforms;
+			
+			window.onload = init;
+			
+			function init()
+			{
+				window.addEventListener( 'resize', onWindowResize, false );
+			
+				width = window.innerWidth;
+				height = window.innerHeight;
+			
+				scene = new THREE.Scene();
+				camera = new THREE.OrthographicCamera(-0.5, 0.5, 0.5, -0.5, 1, 2);
+				camera.position.set(0, 0, 1);
+				scene.add(camera);
+	
+				renderer = new THREE.WebGLRenderer();
+				renderer.setSize(width, height);
+				document.getElementById("renderContainer").appendChild(renderer.domElement);
+
+				// stream the webcam input to a texture
+				
+				video = document.getElementById('video');
+				
+				if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+					var constraints = { video: { width: 1280, height: 720, facingMode: "environment" } };
+					navigator.mediaDevices.getUserMedia(constraints).then( function (stream) {
+						// apply the stream to the video element used in the texture
+						video.srcObject = stream;
+						video.play();
+					} ).catch( function ( error ) {
+						console.error( 'Unable to access the camera/webcam.', error );
+					} );
+				} else {
+					console.error( 'MediaDevices interface not available.' );
+					document.getElementById("err").textContent = JSON.stringify(navigator);
+				}
+				
+				texture = new THREE.VideoTexture(video);
+				//texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+				
+				
+				// create our shader material
+				uniforms = {
+					"inTexture": { value: texture },
+					"swirl": { value: 0.0 },
+					"dilationX": { value: 0.0 },
+					"offsetX": { value: 0.0 },
+					"offsetY": { value: 0.0 },
+					"duplication": { value: 1.0 },
+					"hue": { value: 0.0 }
+				};
+				
+				var material = new THREE.ShaderMaterial({
+					uniforms: uniforms,
+					vertexShader: document.getElementById('vertexShader').textContent,
+					fragmentShader: document.getElementById('fragmentShader').textContent
+				});
+				
+				// add a plane geometry
+				var geometry = new THREE.PlaneGeometry(1, 1);
+				var plane = new THREE.Mesh(geometry, material);
+				
+				scene.add(plane);
+				
+				// watch GPS and orientation
+				if (!DEBUGMODE)
+				{
+					navigator.geolocation.watchPosition(onGPSUpdate, function() { }, {
+						enableHighAccuracy: true
+						//timeout: 1000
+					});
+					window.addEventListener("deviceorientation", onOrientationUpdate, true);
+				}
+				else
+				{
+					document.getElementById("gui").className = "";
+				}
+				
+				// Start rendering the scene
+				animate();
+			}
+			
+			function onWindowResize()
+			{
+				width = window.innerWidth;
+				height = window.innerHeight;
+
+				renderer.setSize(width, height);
+			}
+			
+			function onGPSUpdate(position)
+			{
+				var lat = position.coords.latitude - MINLAT;
+				var lon = position.coords.longitude - MINLONG;
+				
+				lat = Math.abs(lat % HOUSELATLENGTH);
+				lon = Math.abs(lon % HOUSELONGLENGTH);
+				
+				document.getElementById("log").textContent = (lon / HOUSELONGLENGTH);
+				
+				uniforms.hue.value = lon / HOUSELONGLENGTH;					// 0 to 1
+				uniforms.swirl.value = lon / HOUSELONGLENGTH * 5 - 3;		// -2 to 3
+				uniforms.duplication.value = lat / HOUSELATLENGTH * 2 + 1; // 1 to 3
+			}
+			
+			function onOrientationUpdate(orientation)
+			{
+				var screen_portrait = false;
+				if (window.innerWidth < window.innerHeight) {
+					screen_portrait = true;
+				}
+			
+				var pitch = Math.abs(Math.abs(orientation.beta) - 90); // pitch: down = 0, fwd = 90, up = 180
+				
+				if (!screen_portrait)
+				{
+					pitch = 90-Math.abs(orientation.gamma)
+				}
+							
+				uniforms.dilationX.value = pitch / 90 - 0.5; 		// -0.5 to 0.5
+				
+				uniforms.offsetX.value = pitch / 90 + 0.6;					// 0 to 2
+				uniforms.offsetY.value = pitch / 90 + 0.4;			// 0.5 to 2.5
+			}
+			
+			function animate() {
+				requestAnimationFrame(animate);
+				
+				if (DEBUGMODE)
+				{
+					onGPSUpdate({
+						coords: {
+							latitude: document.getElementById("lat").value,
+							longitude: document.getElementById("lon").value
+						}
+					});
+					
+					onOrientationUpdate({
+						alpha: document.getElementById("yaw").value,
+						beta: document.getElementById("pit").value
+					});
+				}
+				
+				//uniforms.swirl.value = document.getElementById("swirl").value;
+				//uniforms.dilationX.value = document.getElementById("dilationX").value;
+				//uniforms.offsetX.value = document.getElementById("offsetX").value;
+				//uniforms.offsetY.value = document.getElementById("offsetY").value;
+				//uniforms.duplication.value = document.getElementById("duplication").value;
+				//uniforms.hue.value = document.getElementById("hue").value;
+				
+				renderer.render(scene, camera);
+			}			
+			
+		</script>
+		<video id="video" autoplay style="display:none"></video>
+		
+		<div id="gui" class="invisible">
+			<ul>
+				<!--
+				<li>Swirl: <input type="range" id="swirl" min="-2" max="2" value="0" step="any" style="width:300px" /></li>
+				<li>Dilation X: <input type="range" id="dilationX" min="-0.5" max="0.5" value="0" step="any" style="width:300px" /></li>
+				<li>Offset X: <input type="range" id="offsetX" min="0" max="1" value="0" step="any" style="width:300px" /></li>
+				<li>Offset Y: <input type="range" id="offsetY" min="0" max="1" value="0" step="any" style="width:300px" /></li>
+				<li>Duplication: <input type="range" id="duplication" min="1" max="3" value="1" step="any" style="width:300px" /></li>
+				<li>Hue: <input type="range" id="hue" min="0" max="1" value="0" step="any" style="width:300px" /></li>
+				-->
+				
+				<li>Lat: <input type="range" id="lat" min="-118.351453" max="-118.350809" value="-118.351453" step="any" style="width:300px" /></li>
+				<li>Lon: <input type="range" id="lon" min="33.765117" max="33.765398" value="33.765117" step="any" style="width:300px" /></li>
+				<li>Yaw: <input type="range" id="yaw" min="0" max="360" value="0" step="any" style="width:300px" /></li>
+				<li>Pit: <input type="range" id="pit" min="-180" max="180" value="90" step="any" style="width:300px" /></li>
+
+				<p id="log"></p>
+
+			</ul>
+		</div>
+		
+		<div id="renderContainer"></div>
+	</body>
+</html>
