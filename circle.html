@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>Merry Christmas!</title>
+		<style>
+			body {
+				margin: 0;
+				background-color: #eeeeee;
+			}
+			canvas {
+				margin: auto;
+				display: block;
+			}
+			
+			#buttonDiv {
+				position: relative;
+				text-align: center;
+				
+				top: -440px;
+			}
+			
+			#startButton {
+				height: 75px;
+				width: 150px;
+				font-size: 45px;
+				background-color: darkseagreen;
+			}
+			
+			#success {
+				position: relative;
+				text-align: center;
+				top: -490px;
+				left: 5px;
+				font-size: 50px;
+				font-family: monospace;
+				font-weight: bold;
+				color: darkgreen;
+			}
+			
+			.invisible {
+				display: none;
+			}
+			
+		</style>
+	</head>
+	<body>
+		<script>
+			
+			var noteStrings = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+			
+			var iftttUrl = "https://maker.ifttt.com/trigger/turn_off/with/key/chaK1uquYbTdMvFBWqm3Ac"
+			
+			var targetSequenceLetters = ["A", "C", "E", "B", "A", "G"];
+			var targetSequence = targetSequenceLetters.map(x => noteStrings.indexOf(x));
+			var nextNoteIndex = 0;
+			
+			var width = 800;
+			var canvas, canvasCtx;
+			
+			var audioCtx, stream, source, anaylser;
+			var buffer;
+			
+			window.onload = init;
+			
+			function updateProgress(x)
+			{
+				if (nextNoteIndex > targetSequence.length)
+				{
+					return; // we're Done!
+				}
+				
+				nextNoteIndex = x;
+
+				// draw the canvas!
+				canvasCtx.clearRect(0, 0, width, width); // clear the whole canvas
+								
+				var R = width * 3 / 10;
+				var r = width / 8;
+				var minir = width / 14;
+				
+				canvasCtx.lineWidth = 6;
+				canvasCtx.strokeStyle = 'black';
+				canvasCtx.beginPath();
+				canvasCtx.ellipse(width/2, width/2, R, R, 0, -Math.PI/2, 2*Math.PI * (1 - 1 / targetSequence.length) - Math.PI/2);
+				canvasCtx.stroke();
+				
+				for (var i = 0; i < targetSequence.length; i++)
+				{
+					var theta = 2*Math.PI / targetSequence.length * i - Math.PI / 2;
+				
+					canvasCtx.lineWidth = 5;
+					canvasCtx.strokeStyle = 'black';
+					canvasCtx.fillStyle = 'white';
+					canvasCtx.beginPath();
+					canvasCtx.ellipse(R*Math.cos(theta) + width/2, R*Math.sin(theta) + width/2, r, r, 0, 0, 2*Math.PI);
+					canvasCtx.fill();
+					canvasCtx.stroke();
+					
+					if (i < nextNoteIndex)
+					{
+						canvasCtx.lineWidth = 14;
+						canvasCtx.strokeStyle = 'green';
+						canvasCtx.beginPath();
+						canvasCtx.ellipse(R*Math.cos(theta) + width/2, R*Math.sin(theta) + width/2, minir, minir, 0, 0, 2*Math.PI);
+						canvasCtx.stroke();
+					}
+				}
+				
+				if (nextNoteIndex >= targetSequence.length) // Success!
+				{
+					// show success message
+					document.getElementById("success").classList = "";
+				
+					// trigger plug!
+					var xmlHttp = new XMLHttpRequest();
+					xmlHttp.open("GET", iftttUrl, true);
+					xmlHttp.send(null);
+				
+					// don't update the canvas anymore:
+					nextNoteIndex++;
+				}
+			}
+			
+			async function init()
+			{
+				canvas = document.getElementById("canvas");
+				canvasCtx = canvas.getContext('2d');
+				updateProgress(0);
+			
+				audioCtx = new(window.AudioContext || window.webkitAudioContext)();
+
+				// stream the microphone input to a Web Audio source
+								
+				if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+				{
+					var constraints = { audio: true };
+					stream = await navigator.mediaDevices.getUserMedia(constraints);
+				}
+				else
+				{
+					console.error('MediaDevices interface not available.', error);
+					return;
+				}
+				
+				source = audioCtx.createMediaStreamSource(stream);			
+				
+				document.getElementById("startButton").addEventListener("click", function() {
+					document.getElementById("startButton").classList = "invisible";
+					audioCtx.resume();
+				});
+				
+				// set up anaylser
+				analyser = audioCtx.createAnalyser();
+				analyser.minDecibels = -90;
+				analyser.maxDecibels = -10;
+				analyser.fftSize = 2048;
+				analyser.smoothingTimeConstant = 0.9;
+
+				source.connect(analyser);
+				
+				buffer = new Float32Array(analyser.frequencyBinCount);
+				
+				// extract frequency data
+				function listen() {
+					
+					var waitTime = 100;
+					
+					analyser.getFloatTimeDomainData(buffer);
+					var ac = autoCorrelate(buffer, audioCtx.sampleRate);
+
+					if (ac != -1) // note detected
+					{
+						var note = noteFromPitch(ac);
+					
+						console.log(note.letter);
+						//document.getElementById("log").textContent = noteFromPitch(ac);
+
+						var targetNote = targetSequence[nextNoteIndex];
+						if (note.number == targetNote)
+						{ // Correct note!
+							updateProgress(nextNoteIndex + 1);
+							waitTime = 1000;
+						}
+						else if (nextNoteIndex > 0 && note.number == targetSequence[nextNoteIndex - 1])
+						{
+							// heard last note again!
+							console.log("repeat");
+						}
+						else if (Math.min(Math.abs(note.number - targetNote), Math.abs(note.number + (note.number > targetNote ? -12 : 12) - targetNote)) <= 2)
+						{
+							// close to correct note!
+							console.log("close");
+						}
+						else
+						{	// wrong note!
+							updateProgress(0);
+							waitTime = 1000;
+						}
+					}
+					
+					window.setTimeout(listen, waitTime);
+				}
+				window.setTimeout(listen, 100);
+			}
+			
+			var MIN_SAMPLES = 0;  // will be initialized when AudioContext is created.
+			var GOOD_ENOUGH_CORRELATION = 0.99; // this is the "bar" for how close a correlation needs to be
+			function autoCorrelate( buf, sampleRate ) {
+				var SIZE = buf.length;
+				var MAX_SAMPLES = Math.floor(SIZE/2);
+				var best_offset = -1;
+				var best_correlation = 0;
+				var rms = 0;
+				var foundGoodCorrelation = false;
+				var correlations = new Array(MAX_SAMPLES);
+
+				for (var i=0;i<SIZE;i++) {
+					var val = buf[i];
+					rms += val*val;
+				}
+				rms = Math.sqrt(rms/SIZE);
+				if (rms<0.05) // not enough signal
+					return -1;
+
+				var lastCorrelation=1;
+				for (var offset = MIN_SAMPLES; offset < MAX_SAMPLES; offset++) {
+					var correlation = 0;
+
+					for (var i=0; i<MAX_SAMPLES; i++) {
+						correlation += Math.abs((buf[i])-(buf[i+offset]));
+					}
+					correlation = 1 - (correlation/MAX_SAMPLES);
+					correlations[offset] = correlation; // store it, for the tweaking we need to do below.
+					if ((correlation>GOOD_ENOUGH_CORRELATION) && (correlation > lastCorrelation)) {
+						foundGoodCorrelation = true;
+						if (correlation > best_correlation) {
+							best_correlation = correlation;
+							best_offset = offset;
+						}
+					} else if (foundGoodCorrelation) {
+						// short-circuit - we found a good correlation, then a bad one, so we'd just be seeing copies from here.
+						// Now we need to tweak the offset - by interpolating between the values to the left and right of the
+						// best offset, and shifting it a bit.  This is complex, and HACKY in this code (happy to take PRs!) -
+						// we need to do a curve fit on correlations[] around best_offset in order to better determine precise
+						// (anti-aliased) offset.
+
+						// we know best_offset >=1, 
+						// since foundGoodCorrelation cannot go to true until the second pass (offset=1), and 
+						// we can't drop into this clause until the following pass (else if).
+						var shift = (correlations[best_offset+1] - correlations[best_offset-1])/correlations[best_offset];  
+						return sampleRate/(best_offset+(8*shift));
+					}
+					lastCorrelation = correlation;
+				}
+				if (best_correlation > 0.01) {
+					// console.log("f = " + sampleRate/best_offset + "Hz (rms: " + rms + " confidence: " + best_correlation + ")")
+					return sampleRate/best_offset;
+				}
+				return -1;
+			//	var best_frequency = sampleRate/best_offset;
+			}
+			
+			
+			function noteFromPitch( frequency ) {
+				var noteNum = 12 * (Math.log( frequency / 440 )/Math.log(2) );
+				var noteNumber = Math.round( noteNum ) + 69;
+				
+				return {number: (noteNumber % 12), letter: noteStrings[noteNumber % 12]};
+			}
+			
+		</script>
+
+		<canvas id="canvas" width=800 height=800></canvas>
+						
+		<div id="buttonDiv">
+			<input type="button" id="startButton" value="Start" />
+		</div>
+		
+		<p id="success" class="invisible">Success!</p>
+		
+	</body>
+</html>
